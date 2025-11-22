@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import pdfParse from "pdf-parse";
 import PptxGenJS from "pptxgenjs";
+
+// pdf-parseをCommonJS形式でインポート
+const pdfParse = require("pdf-parse");
 
 export async function POST(request: NextRequest) {
   try {
