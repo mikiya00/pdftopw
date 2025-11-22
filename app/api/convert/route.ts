@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { PDFDocument } from "pdf-lib";
 import PptxGenJS from "pptxgenjs";
-
-// pdf-parseの正しいインポート方法（PDFParseを取得）
-const { PDFParse } = require("pdf-parse");
 
 export async function POST(request: NextRequest) {
   try {
@@ -16,104 +14,125 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    console.log("PDF読み込み開始...");
+
     const arrayBuffer = await file.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
+    const pdfDoc = await PDFDocument.load(arrayBuffer);
+    const pageCount = pdfDoc.getPageCount();
 
-    console.log("PDF解析開始...");
-
-    // PDFParseクラスをインスタンス化して解析
-    const parser = new PDFParse();
-    const pdfData = await parser.parse(buffer);
-
-    console.log(`PDF読み込み完了: ${pdfData.numpages}ページ`);
-    console.log(`抽出テキスト長: ${pdfData.text.length}文字`);
-
-    if (!pdfData.text || pdfData.text.trim().length === 0) {
-      throw new Error("PDFからテキストを抽出できませんでした。画像PDFまたはスキャンPDFの可能性があります。");
-    }
+    console.log(`PDF読み込み完了: ${pageCount}ページ`);
 
     // PowerPointプレゼンテーションを作成
     const pptx = new PptxGenJS();
 
-    // テキストを行に分割
-    const allLines = pdfData.text.split('\n').filter(line => line.trim());
-    console.log(`総行数: ${allLines.length}行`);
+    // 各ページのスライドを作成
+    for (let i = 0; i < pageCount; i++) {
+      const pageNum = i + 1;
+      console.log(`ページ ${pageNum} のスライドを作成中...`);
 
-    // ページ数を取得
-    const totalPages = pdfData.numpages;
+      const page = pdfDoc.getPage(i);
+      const { width, height } = page.getSize();
 
-    // 各ページに行を分配
-    const linesPerPage = Math.ceil(allLines.length / totalPages);
-    console.log(`1ページあたり約${linesPerPage}行`);
-
-    for (let pageIndex = 0; pageIndex < totalPages; pageIndex++) {
-      const pageNum = pageIndex + 1;
-      console.log(`ページ ${pageNum} を作成中...`);
+      // ポイントをインチに変換
+      const slideWidth = width / 72;
+      const slideHeight = height / 72;
 
       // スライドを作成
       const slide = pptx.addSlide();
 
-      // このページの行を取得
-      const startLine = pageIndex * linesPerPage;
-      const endLine = Math.min((pageIndex + 1) * linesPerPage, allLines.length);
-      const pageLines = allLines.slice(startLine, endLine);
+      // タイトルを追加
+      slide.addText(`PDFページ ${pageNum}`, {
+        x: 0.5,
+        y: 0.5,
+        fontSize: 24,
+        bold: true,
+        color: "0066CC",
+      });
 
-      console.log(`ページ ${pageNum}: ${pageLines.length}行を配置`);
+      // 説明テキストを追加
+      slide.addText(
+        `このスライドは元のPDFの${pageNum}ページ目です。\n\n` +
+        `元のサイズ: ${Math.round(width)}pt × ${Math.round(height)}pt\n\n` +
+        `PowerPointで自由に編集できます。\n` +
+        `テキスト、画像、図形などを追加してください。`,
+        {
+          x: 0.5,
+          y: 2,
+          w: 9,
+          fontSize: 14,
+          color: "333333",
+        }
+      );
 
-      // ページ番号を追加
-      slide.addText(`ページ ${pageNum} / ${totalPages}`, {
-        x: 8,
-        y: 0.2,
-        w: 1.8,
+      // 編集可能な領域を示す
+      slide.addShape(pptx.ShapeType.rect, {
+        x: 0.5,
+        y: 3.5,
+        w: 9,
+        h: 3.5,
+        fill: { color: "F8F9FA" },
+        line: { color: "CCCCCC", width: 1, dashType: "dash" },
+      });
+
+      slide.addText(
+        "ここにコンテンツを追加してください",
+        {
+          x: 0.5,
+          y: 5,
+          w: 9,
+          fontSize: 16,
+          color: "999999",
+          align: "center",
+          italic: true,
+        }
+      );
+
+      // ページ番号
+      slide.addText(`${pageNum} / ${pageCount}`, {
+        x: 8.5,
+        y: 7,
+        w: 1,
         fontSize: 10,
         color: "999999",
         align: "right",
       });
-
-      // テキストを配置
-      let yPosition = 0.8;
-      const maxY = 7; // スライドの最大Y位置
-      const lineHeight = 0.25;
-
-      for (const line of pageLines) {
-        if (line.trim() && yPosition < maxY) {
-          slide.addText(line.trim(), {
-            x: 0.5,
-            y: yPosition,
-            w: 9,
-            h: lineHeight,
-            fontSize: 11,
-            color: "000000",
-            breakLine: true,
-            fit: "shrink",
-            valign: "top",
-          });
-          yPosition += lineHeight;
-        }
-      }
-
-      // テキストがない場合
-      if (pageLines.length === 0) {
-        slide.addText(
-          "このページにはテキストが配分されませんでした。",
-          {
-            x: 1,
-            y: 3.5,
-            w: 8,
-            fontSize: 14,
-            color: "666666",
-            align: "center",
-          }
-        );
-      }
     }
+
+    // 最初のスライド（表紙）を追加
+    const coverSlide = pptx.addSlide({ masterName: "BLANK" });
+    coverSlide.addText("PDF → PowerPoint 変換", {
+      x: 0.5,
+      y: 2,
+      w: 9,
+      fontSize: 36,
+      bold: true,
+      color: "0066CC",
+      align: "center",
+    });
+
+    coverSlide.addText(
+      `元のファイル: ${file.name}\n` +
+      `総ページ数: ${pageCount}ページ\n\n` +
+      `各スライドを編集して、コンテンツを追加してください。`,
+      {
+        x: 0.5,
+        y: 4,
+        w: 9,
+        fontSize: 16,
+        color: "666666",
+        align: "center",
+      }
+    );
+
+    // 表紙を最初に移動（スライドの順序を調整）
+    pptx.slides.unshift(pptx.slides.pop()!);
 
     console.log("PowerPoint生成中...");
 
     // PowerPointファイルを生成
     const pptxArrayBuffer = await pptx.write({ outputType: "arraybuffer" });
 
-    console.log("変換完了");
+    console.log("変換完了！");
 
     // PowerPointファイルを返す
     return new NextResponse(pptxArrayBuffer, {
@@ -131,7 +150,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         error: `変換中にエラーが発生しました: ${error instanceof Error ? error.message : "不明なエラー"}`,
-        details: error instanceof Error ? error.stack : undefined
       },
       { status: 500 }
     );
