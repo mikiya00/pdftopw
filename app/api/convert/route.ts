@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import PptxGenJS from "pptxgenjs";
 
-// pdf-parseをCommonJS形式でインポート（.defaultを使用）
-const pdf = require("pdf-parse");
+// pdf-parseの正しいインポート方法（PDFParseを取得）
+const { PDFParse } = require("pdf-parse");
 
 export async function POST(request: NextRequest) {
   try {
@@ -20,11 +20,9 @@ export async function POST(request: NextRequest) {
     const buffer = Buffer.from(arrayBuffer);
 
     console.log("PDF解析開始...");
-    console.log("pdf-parse type:", typeof pdf);
-    console.log("pdf-parse keys:", Object.keys(pdf));
 
-    // pdf-parseでPDFを解析（関数として直接呼び出す）
-    const pdfData = await pdf(buffer);
+    // PDFParseでPDFを解析
+    const pdfData = await PDFParse(buffer);
 
     console.log(`PDF読み込み完了: ${pdfData.numpages}ページ`);
     console.log(`抽出テキスト長: ${pdfData.text.length}文字`);
