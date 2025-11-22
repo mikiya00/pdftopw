@@ -21,8 +21,9 @@ export async function POST(request: NextRequest) {
 
     console.log("PDF解析開始...");
 
-    // PDFParseでPDFを解析
-    const pdfData = await PDFParse(buffer);
+    // PDFParseクラスをインスタンス化して解析
+    const parser = new PDFParse();
+    const pdfData = await parser.parse(buffer);
 
     console.log(`PDF読み込み完了: ${pdfData.numpages}ページ`);
     console.log(`抽出テキスト長: ${pdfData.text.length}文字`);
