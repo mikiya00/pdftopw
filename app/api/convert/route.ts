@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import PDFParser from "pdf2json";
+import pdfParse from "pdf-parse";
 import PptxGenJS from "pptxgenjs";
 
 export async function POST(request: NextRequest) {
@@ -17,52 +17,49 @@ export async function POST(request: NextRequest) {
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    // PDFパーサーを作成
-    const pdfParser = new PDFParser();
+    console.log("PDF解析開始...");
 
-    // PDFを解析（Promiseでラップ）
-    const pdfData = await new Promise<any>((resolve, reject) => {
-      pdfParser.on("pdfParser_dataError", (errData: any) => {
-        reject(new Error(errData.parserError));
-      });
+    // pdf-parseでPDFを解析
+    const pdfData = await pdfParse(buffer);
 
-      pdfParser.on("pdfParser_dataReady", (pdfData: any) => {
-        resolve(pdfData);
-      });
+    console.log(`PDF読み込み完了: ${pdfData.numpages}ページ`);
+    console.log(`抽出テキスト長: ${pdfData.text.length}文字`);
 
-      pdfParser.parseBuffer(buffer);
-    });
-
-    console.log(`PDF読み込み完了: ${pdfData.Pages?.length || 0}ページ`);
-
-    if (!pdfData.Pages || pdfData.Pages.length === 0) {
-      throw new Error("PDFページが見つかりません");
+    if (!pdfData.text || pdfData.text.trim().length === 0) {
+      throw new Error("PDFからテキストを抽出できませんでした。画像PDFまたはスキャンPDFの可能性があります。");
     }
 
     // PowerPointプレゼンテーションを作成
     const pptx = new PptxGenJS();
 
-    // 各ページを処理
-    for (let pageIndex = 0; pageIndex < pdfData.Pages.length; pageIndex++) {
-      const page = pdfData.Pages[pageIndex];
-      const pageNum = pageIndex + 1;
+    // テキストを行に分割
+    const allLines = pdfData.text.split('\n').filter(line => line.trim());
+    console.log(`総行数: ${allLines.length}行`);
 
-      console.log(`ページ ${pageNum} を処理中...`);
+    // ページ数を取得
+    const totalPages = pdfData.numpages;
+
+    // 各ページに行を分配
+    const linesPerPage = Math.ceil(allLines.length / totalPages);
+    console.log(`1ページあたり約${linesPerPage}行`);
+
+    for (let pageIndex = 0; pageIndex < totalPages; pageIndex++) {
+      const pageNum = pageIndex + 1;
+      console.log(`ページ ${pageNum} を作成中...`);
 
       // スライドを作成
       const slide = pptx.addSlide();
 
-      // PDFページのサイズを取得（pdf2jsonの単位をインチに変換）
-      const pageWidth = (page.Width || 8.5);
-      const pageHeight = (page.Height || 11);
+      // このページの行を取得
+      const startLine = pageIndex * linesPerPage;
+      const endLine = Math.min((pageIndex + 1) * linesPerPage, allLines.length);
+      const pageLines = allLines.slice(startLine, endLine);
 
-      // テキスト要素を抽出
-      const texts = page.Texts || [];
-      console.log(`ページ ${pageNum}: ${texts.length}個のテキスト要素を検出`);
+      console.log(`ページ ${pageNum}: ${pageLines.length}行を配置`);
 
       // ページ番号を追加
-      slide.addText(`ページ ${pageNum} / ${pdfData.Pages.length}`, {
-        x: pageWidth - 2,
+      slide.addText(`ページ ${pageNum} / ${totalPages}`, {
+        x: 8,
         y: 0.2,
         w: 1.8,
         fontSize: 10,
@@ -70,82 +67,36 @@ export async function POST(request: NextRequest) {
         align: "right",
       });
 
-      if (texts.length > 0) {
-        // テキスト要素をグループ化（行ごとに）
-        interface TextLine {
-          text: string;
-          x: number;
-          y: number;
-          fontSize: number;
-        }
+      // テキストを配置
+      let yPosition = 0.8;
+      const maxY = 7; // スライドの最大Y位置
+      const lineHeight = 0.25;
 
-        const lines: TextLine[] = [];
-        const lineThreshold = 0.15; // Y座標の差がこの値以下なら同じ行と判断
-
-        for (const textItem of texts) {
-          const x = textItem.x || 0;
-          const y = textItem.y || 0;
-
-          // デコードされたテキストを取得
-          let decodedText = "";
-          if (textItem.R && textItem.R.length > 0) {
-            for (const run of textItem.R) {
-              if (run.T) {
-                decodedText += decodeURIComponent(run.T);
-              }
-            }
-          }
-
-          if (!decodedText.trim()) continue;
-
-          // フォントサイズを取得（pdf2jsonの単位）
-          const fontSize = textItem.R?.[0]?.TS?.[1] || 12;
-
-          // 既存の行に追加するか、新しい行を作成
-          const existingLine = lines.find(line => Math.abs(line.y - y) < lineThreshold);
-
-          if (existingLine && Math.abs(existingLine.x - x) < 0.5) {
-            existingLine.text += " " + decodedText;
-          } else {
-            lines.push({
-              text: decodedText,
-              x: x,
-              y: y,
-              fontSize: fontSize,
-            });
-          }
-        }
-
-        // テキストをY座標でソート（上から下へ）
-        lines.sort((a, b) => a.y - b.y);
-
-        console.log(`ページ ${pageNum}: ${lines.length}行のテキストを抽出`);
-
-        // 抽出したテキストをスライドに追加
-        for (const line of lines) {
-          // スライドの範囲内に収まるように調整
-          const adjustedY = Math.min(Math.max(line.y, 0.5), pageHeight - 0.5);
-          const adjustedX = Math.min(Math.max(line.x, 0.3), pageWidth - 0.3);
-          const adjustedFontSize = Math.min(Math.max(line.fontSize, 8), 32);
-
-          slide.addText(line.text, {
-            x: adjustedX,
-            y: adjustedY,
-            fontSize: adjustedFontSize,
+      for (const line of pageLines) {
+        if (line.trim() && yPosition < maxY) {
+          slide.addText(line.trim(), {
+            x: 0.5,
+            y: yPosition,
+            w: 9,
+            h: lineHeight,
+            fontSize: 11,
             color: "000000",
-            breakLine: false,
+            breakLine: true,
             fit: "shrink",
-            w: Math.min(pageWidth - adjustedX - 0.3, 8),
+            valign: "top",
           });
+          yPosition += lineHeight;
         }
-      } else {
-        // テキストが抽出できなかった場合
+      }
+
+      // テキストがない場合
+      if (pageLines.length === 0) {
         slide.addText(
-          "このページにはテキストコンテンツが検出されませんでした。\n画像またはスキャンされたPDFの可能性があります。",
+          "このページにはテキストが配分されませんでした。",
           {
             x: 1,
-            y: pageHeight / 2 - 0.5,
-            w: pageWidth - 2,
+            y: 3.5,
+            w: 8,
             fontSize: 14,
             color: "666666",
             align: "center",
