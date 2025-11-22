@@ -14,7 +14,7 @@ PDFファイルをパワーポイント（PowerPoint）形式に変換して、�
 
 - **フロントエンド**: Next.js 14 (App Router), React, TypeScript
 - **スタイリング**: Tailwind CSS
-- **PDF処理**: pdfjs-dist（テキスト抽出）、pdf-parse
+- **PDF処理**: pdf2json（テキスト・位置情報抽出）、pdf-parse
 - **PowerPoint生成**: pptxgenjs
 - **ファイルアップロード**: react-dropzone
 
@@ -89,9 +89,9 @@ PDFファイルの各ページをPowerPointのスライドに変換します。�
 
 ### 変換の仕組み
 
-1. **PDF.js**を使用してPDFからテキストコンテンツを抽出
-2. 各テキスト要素の位置、サイズ、内容を解析
-3. テキストを行ごとにグループ化
+1. **pdf2json**を使用してPDFからテキストコンテンツと位置情報を抽出
+2. 各テキスト要素の位置（X, Y座標）、サイズ、内容を解析
+3. テキストを行ごとにグループ化して整理
 4. PowerPointスライドに元の位置とサイズで配置
 5. 編集可能なテキストボックスとして出力
 

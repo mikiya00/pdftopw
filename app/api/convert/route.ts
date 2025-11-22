@@ -1,9 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
+import PDFParser from "pdf2json";
 import PptxGenJS from "pptxgenjs";
-
-// PDF.jsの設定
-pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
 
 export async function POST(request: NextRequest) {
   try {
@@ -18,71 +15,54 @@ export async function POST(request: NextRequest) {
     }
 
     const arrayBuffer = await file.arrayBuffer();
-    const uint8Array = new Uint8Array(arrayBuffer);
+    const buffer = Buffer.from(arrayBuffer);
 
-    // PDFドキュメントを読み込む
-    const loadingTask = pdfjsLib.getDocument({ data: uint8Array });
-    const pdfDocument = await loadingTask.promise;
-    const pageCount = pdfDocument.numPages;
+    // PDFパーサーを作成
+    const pdfParser = new PDFParser();
 
-    console.log(`PDF読み込み完了: ${pageCount}ページ`);
+    // PDFを解析（Promiseでラップ）
+    const pdfData = await new Promise<any>((resolve, reject) => {
+      pdfParser.on("pdfParser_dataError", (errData: any) => {
+        reject(new Error(errData.parserError));
+      });
+
+      pdfParser.on("pdfParser_dataReady", (pdfData: any) => {
+        resolve(pdfData);
+      });
+
+      pdfParser.parseBuffer(buffer);
+    });
+
+    console.log(`PDF読み込み完了: ${pdfData.Pages?.length || 0}ページ`);
+
+    if (!pdfData.Pages || pdfData.Pages.length === 0) {
+      throw new Error("PDFページが見つかりません");
+    }
 
     // PowerPointプレゼンテーションを作成
     const pptx = new PptxGenJS();
 
     // 各ページを処理
-    for (let pageNum = 1; pageNum <= pageCount; pageNum++) {
-      const page = await pdfDocument.getPage(pageNum);
-      const viewport = page.getViewport({ scale: 1.0 });
+    for (let pageIndex = 0; pageIndex < pdfData.Pages.length; pageIndex++) {
+      const page = pdfData.Pages[pageIndex];
+      const pageNum = pageIndex + 1;
 
-      // テキストコンテンツを抽出
-      const textContent = await page.getTextContent();
-      const textItems = textContent.items;
-
-      console.log(`ページ ${pageNum}: ${textItems.length}個のテキスト要素を検出`);
+      console.log(`ページ ${pageNum} を処理中...`);
 
       // スライドを作成
       const slide = pptx.addSlide();
 
-      // PDFページのサイズに基づいてスライドサイズを設定（ポイントをインチに変換）
-      const slideWidth = viewport.width / 72;
-      const slideHeight = viewport.height / 72;
+      // PDFページのサイズを取得（pdf2jsonの単位をインチに変換）
+      const pageWidth = (page.Width || 8.5);
+      const pageHeight = (page.Height || 11);
 
-      // テキストアイテムをグループ化（行ごとに）
-      const lines: Array<{ text: string; y: number; x: number; size: number }> = [];
-      const lineThreshold = 5; // Y座標の差がこの値以下なら同じ行と判断
-
-      for (const item of textItems) {
-        if ("str" in item && item.str.trim()) {
-          const transform = item.transform;
-          const x = transform[4];
-          const y = viewport.height - transform[5]; // Y座標を反転
-          const fontSize = Math.sqrt(transform[0] * transform[0] + transform[1] * transform[1]);
-
-          // 既存の行に追加するか、新しい行を作成
-          const existingLine = lines.find(line => Math.abs(line.y - y) < lineThreshold);
-
-          if (existingLine && Math.abs(existingLine.x + existingLine.text.length * 5 - x) < 50) {
-            existingLine.text += " " + item.str;
-          } else {
-            lines.push({
-              text: item.str,
-              x: x / 72, // インチに変換
-              y: y / 72, // インチに変換
-              size: Math.max(fontSize * 0.75, 10), // フォントサイズを調整
-            });
-          }
-        }
-      }
-
-      // テキストをY座標でソート（上から下へ）
-      lines.sort((a, b) => a.y - b.y);
-
-      console.log(`ページ ${pageNum}: ${lines.length}行のテキストを抽出`);
+      // テキスト要素を抽出
+      const texts = page.Texts || [];
+      console.log(`ページ ${pageNum}: ${texts.length}個のテキスト要素を検出`);
 
       // ページ番号を追加
-      slide.addText(`ページ ${pageNum} / ${pageCount}`, {
-        x: slideWidth - 2,
+      slide.addText(`ページ ${pageNum} / ${pdfData.Pages.length}`, {
+        x: pageWidth - 2,
         y: 0.2,
         w: 1.8,
         fontSize: 10,
@@ -90,21 +70,72 @@ export async function POST(request: NextRequest) {
         align: "right",
       });
 
-      // 抽出したテキストをスライドに追加
-      if (lines.length > 0) {
+      if (texts.length > 0) {
+        // テキスト要素をグループ化（行ごとに）
+        interface TextLine {
+          text: string;
+          x: number;
+          y: number;
+          fontSize: number;
+        }
+
+        const lines: TextLine[] = [];
+        const lineThreshold = 0.15; // Y座標の差がこの値以下なら同じ行と判断
+
+        for (const textItem of texts) {
+          const x = textItem.x || 0;
+          const y = textItem.y || 0;
+
+          // デコードされたテキストを取得
+          let decodedText = "";
+          if (textItem.R && textItem.R.length > 0) {
+            for (const run of textItem.R) {
+              if (run.T) {
+                decodedText += decodeURIComponent(run.T);
+              }
+            }
+          }
+
+          if (!decodedText.trim()) continue;
+
+          // フォントサイズを取得（pdf2jsonの単位）
+          const fontSize = textItem.R?.[0]?.TS?.[1] || 12;
+
+          // 既存の行に追加するか、新しい行を作成
+          const existingLine = lines.find(line => Math.abs(line.y - y) < lineThreshold);
+
+          if (existingLine && Math.abs(existingLine.x - x) < 0.5) {
+            existingLine.text += " " + decodedText;
+          } else {
+            lines.push({
+              text: decodedText,
+              x: x,
+              y: y,
+              fontSize: fontSize,
+            });
+          }
+        }
+
+        // テキストをY座標でソート（上から下へ）
+        lines.sort((a, b) => a.y - b.y);
+
+        console.log(`ページ ${pageNum}: ${lines.length}行のテキストを抽出`);
+
+        // 抽出したテキストをスライドに追加
         for (const line of lines) {
           // スライドの範囲内に収まるように調整
-          const adjustedY = Math.min(Math.max(line.y, 0.5), slideHeight - 0.5);
-          const adjustedX = Math.min(Math.max(line.x, 0.3), slideWidth - 0.3);
+          const adjustedY = Math.min(Math.max(line.y, 0.5), pageHeight - 0.5);
+          const adjustedX = Math.min(Math.max(line.x, 0.3), pageWidth - 0.3);
+          const adjustedFontSize = Math.min(Math.max(line.fontSize, 8), 32);
 
           slide.addText(line.text, {
             x: adjustedX,
             y: adjustedY,
-            fontSize: Math.min(line.size, 28),
+            fontSize: adjustedFontSize,
             color: "000000",
             breakLine: false,
             fit: "shrink",
-            w: Math.min(slideWidth - adjustedX - 0.3, 8),
+            w: Math.min(pageWidth - adjustedX - 0.3, 8),
           });
         }
       } else {
@@ -113,8 +144,8 @@ export async function POST(request: NextRequest) {
           "このページにはテキストコンテンツが検出されませんでした。\n画像またはスキャンされたPDFの可能性があります。",
           {
             x: 1,
-            y: slideHeight / 2 - 0.5,
-            w: slideWidth - 2,
+            y: pageHeight / 2 - 0.5,
+            w: pageWidth - 2,
             fontSize: 14,
             color: "666666",
             align: "center",
@@ -144,7 +175,10 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     console.error("変換エラー:", error);
     return NextResponse.json(
-      { error: `変換中にエラーが発生しました: ${error instanceof Error ? error.message : "不明なエラー"}` },
+      {
+        error: `変換中にエラーが発生しました: ${error instanceof Error ? error.message : "不明なエラー"}`,
+        details: error instanceof Error ? error.stack : undefined
+      },
       { status: 500 }
     );
   }
